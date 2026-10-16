@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="si">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 LED Controller</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mut:#6b7280;--ac:#2563eb;--bd:#d9dde3;--on:#f59e0b}
+  @media (prefers-color-scheme:dark){:root{--bg:#111418;--card:#1b2027;--tx:#e8eaed;--mut:#9aa3af;--bd:#2f3640}}
+  *{box-sizing:border-box}
+  body{margin:0;padding:16px;background:var(--bg);color:var(--tx);font:15px system-ui,sans-serif}
+  .wrap{max-width:640px;margin:auto}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+  h1{font-size:20px;margin:0 0 12px} h2{font-size:15px;margin:0 0 10px}
+  label{display:block;color:var(--mut);font-size:13px;margin:8px 0 4px}
+  input,select,button{font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px 10px}
+  input[type=text],input[type=password],select{width:100%}
+  input[type=range]{width:100%;padding:0}
+  button{cursor:pointer} button.pri{background:var(--ac);border-color:var(--ac);color:#fff;width:100%;padding:11px;margin-top:6px}
+  button.sm{padding:6px 10px;font-size:13px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .step{display:flex;gap:8px;align-items:center;margin-bottom:8px;overflow-x:auto}
+  .pins{display:flex;gap:6px}
+  .pin{width:28px;height:28px;border-radius:50%;border:2px solid var(--bd);background:var(--bg);padding:0;cursor:pointer}
+  .pin.on{background:var(--on);border-color:var(--on)}
+  .ms{width:84px} .n{color:var(--mut);width:22px;text-align:right;flex:none}
+  #out{font-family:monospace;font-size:12px;word-break:break-all;color:var(--mut);margin-top:8px}
+  #msg{min-height:20px;margin-top:8px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ESP32 LED Controller</h1>
+
+  <div class="card">
+    <h2>Pattern</h2>
+    <select id="pattern" onchange="toggle()">
+      <option value="0">0 - OFF</option>
+      <option value="1">1 - සියල්ල blink</option>
+      <option value="2">2 - Chase</option>
+      <option value="3">3 - Knight Rider</option>
+      <option value="4">4 - Alternate</option>
+      <option value="5">5 - Random</option>
+      <option value="6" selected>6 - CUSTOM</option>
+    </select>
+    <div id="speedBox">
+      <label>Speed (step එකක කාලය): <b id="sv">300</b> ms</label>
+      <input type="range" id="speed" min="20" max="2000" step="10" value="300"
+             oninput="sv.textContent=this.value">
+    </div>
+  </div>
+
+  <div class="card" id="customBox">
+    <h2>Custom steps</h2>
+    <div class="row" style="margin-bottom:10px">
+      <span style="color:var(--mut)">Pins: 6</span>
+      <button class="sm" onclick="addStep()">+ Step</button>
+      <button class="sm" onclick="preset('chase')">Chase</button>
+      <button class="sm" onclick="preset('blink')">Blink</button>
+      <button class="sm" onclick="steps=[];render()">Clear</button>
+    </div>
+    <div id="steps"></div>
+    <div id="out"></div>
+  </div>
+
+  <button class="pri" onclick="send()">යවන්න</button>
+  <button class="sm" style="width:100%;margin-top:8px" onclick="loadCurrent()">දැනට තියෙන ඒක ගන්න</button>
+  <div id="msg"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+// ---- Firebase settings (UI එකේ පෙන්නන්නේ නැහැ, මෙතන විතරක් වෙනස් කරන්න) ----
+const DB_URL  = 'https://ledblink-99ee8-default-rtdb.asia-southeast1.firebasedatabase.app';
+const DB_AUTH = '';   // අවශ්‍ය නම් පමණක්
+
+const pins = 6;       // ස්ථිරයි (ESP32 code එකේ PINS[] එකටත් 6ක්)
+const MAX_STEPS = 300;
+let steps = [{m:[1,0,0,0,0,0], t:200}, {m:[0,1,0,0,0,0], t:200}, {m:[0,0,1,0,0,0], t:200}];
+
+function toggle(){
+  const p = +$('pattern').value;
+  $('customBox').style.display = p === 6 ? '' : 'none';
+  $('speedBox').style.display = (p >= 1 && p <= 5) ? '' : 'none';
+}
+
+function render(){
+  const box = $('steps'); box.innerHTML = '';
+  steps.forEach((s, i) => {
+    const d = document.createElement('div'); d.className = 'step';
+    d.innerHTML = `<span class="n">${i+1}</span><div class="pins"></div>
+      <input type="number" class="ms" min="10" max="60000" value="${s.t}"> ms
+      <button class="sm" title="copy">⧉</button><button class="sm" title="delete">✕</button>`;
+    const pc = d.querySelector('.pins');
+    s.m.forEach((v, j) => {
+      const b = document.createElement('button');
+      b.className = 'pin' + (v ? ' on' : ''); b.title = 'Pin ' + (j+1);
+      b.onclick = () => { s.m[j] = s.m[j] ? 0 : 1; b.classList.toggle('on'); upd(); };
+      pc.appendChild(b);
+    });
+    d.querySelector('.ms').oninput = e => { s.t = Math.max(10, +e.target.value || 10); upd(); };
+    const [cp, del] = d.querySelectorAll('button.sm');
+    cp.onclick  = () => { steps.splice(i+1, 0, {m:[...s.m], t:s.t}); render(); };
+    del.onclick = () => { steps.splice(i, 1); render(); };
+    box.appendChild(d);
+  });
+  upd();
+}
+
+function str(){ return steps.map(s => s.m.join('') + ':' + s.t).join(','); }
+function upd(){ $('out').textContent = str() || '(steps නැහැ)'; }
+
+function addStep(){ if (steps.length >= MAX_STEPS) return say('උපරිම step ' + MAX_STEPS + 'යි', 1); steps.push({m:Array(pins).fill(0), t:300}); render(); }
+function preset(n){
+  if (n === 'chase') steps = Array.from({length:pins}, (_, i) => ({m:Array.from({length:pins}, (_, j) => +(i===j)), t:200}));
+  if (n === 'blink') steps = [{m:Array(pins).fill(1), t:400}, {m:Array(pins).fill(0), t:400}];
+  render();
+}
+
+function say(t, err){ $('msg').textContent = t; $('msg').style.color = err ? '#dc2626' : '#16a34a'; }
+function endpoint(){
+  if (DB_URL.includes('YOUR-PROJECT')) { say('HTML code එකේ DB_URL එක දාන්න', 1); return null; }
+  const base = DB_URL.trim().replace(/\/+$/, '');
+  const a = DB_AUTH.trim();
+  return base + '/led.json' + (a ? '?auth=' + encodeURIComponent(a) : '');
+}
+
+async function send(){
+  const ep = endpoint(); if (!ep) return;
+  const p = +$('pattern').value;
+  const body = { pattern: p, speed: +$('speed').value };
+  if (p === 6) {
+    if (!steps.length) return say('අඩුම තරමේ step එකක් දාන්න', 1);
+    body.custom = str();
+    if (body.custom.length > 3900) return say('Pattern එක දිග වැඩියි (' + body.custom.length + '/3900). Step අඩු කරන්න', 1);
+  }
+  try {
+    const r = await fetch(ep, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    say('යැව්වා ✓ (ESP32 එක තත්පර 2ක් ඇතුළත ගන්නවා)');
+  } catch(e){ say('Error: ' + e.message, 1); }
+}
+
+async function loadCurrent(){
+  const ep = endpoint(); if (!ep) return;
+  try {
+    const r = await fetch(ep); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json(); if (!d) return say('Database එක හිස්');
+    if (d.pattern != null) $('pattern').value = d.pattern;
+    if (d.speed != null) { $('speed').value = d.speed; $('sv').textContent = d.speed; }
+    if (d.custom) {
+      steps = d.custom.split(',').map(p => { const [m, t] = p.split(':'); return {m:[...m].map(Number), t:+t}; });
+      steps.forEach(s => { while (s.m.length < pins) s.m.push(0); s.m.length = pins; });
+    }
+    toggle(); render(); say('ගත්තා ✓');
+  } catch(e){ say('Error: ' + e.message, 1); }
+}
+
+toggle(); render();
+</script>
+</body>
+</html>
