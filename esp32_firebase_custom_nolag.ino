@@ -16,7 +16,7 @@
 
 const char* WIFI_SSID = "MAHESH";
 const char* WIFI_PASS = "200307055";
-const char* DB_URL    = "https://ledblink-99ee8-default-rtdb.asia-southeast1.firebasedatabase.app";
+const char* DB_URL    = "YOUR FIREBASE DETABASE LINK";
 const char* DB_AUTH   = "";
 
 const unsigned long POLL_INTERVAL = 2000;
